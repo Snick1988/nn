@@ -34,7 +34,8 @@ def predict(theta1, theta2, x):
 
 def randweights(l_in, l_out):
     """Random weights initialization"""
-    return 2 * np.random.random((l_out, l_in + 1)) - 1
+    m = np.random.random((l_out, l_in + 1))
+    return m * np.sqrt(2.0 / m)
 
 
 def unpack(params, ils, hls, labels):
@@ -45,7 +46,7 @@ def unpack(params, ils, hls, labels):
     return (theta1, theta2)
 
 
-def cost(params, ils, hls, labels, x, y, lmbda=0.01):
+def cost(params, ils, hls, labels, x, y, lmbda=0.001):
     """Cost function"""
 
     theta1, theta2 = unpack(params, ils, hls, labels)
@@ -62,7 +63,7 @@ def cost(params, ils, hls, labels, x, y, lmbda=0.01):
     return J
 
 
-def grad(params, ils, hls, labels, x, y, lmbda=0.1):
+def grad(params, ils, hls, labels, x, y, lmbda=0.001):
     """Compute gradient for hypothesis Theta"""
 
     theta1, theta2 = unpack(params, ils, hls, labels)
@@ -104,50 +105,34 @@ def forward(x, theta1, theta2):
     return (a1, a2, a3, z2, m)
 
 
-def fit(x, y, t1, t2, alpha=0.001):
+def fit(x, y, t1, t2, labels=2, alpha=0.1):
     """Training routine"""
     ils = x.shape[1] if len(x.shape) > 1 else 1
-    labels = 2
 
     if t1 is None or t2 is None:
-        t1 = randweights(ils, 5)
-        t2 = randweights(5, labels)
+        t1 = randweights(ils, 25)
+        t2 = randweights(25, labels)
 
     params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-    res = grad(params, ils, 5, labels, x, y)
+    res = grad(params, ils, 25, labels, x, y)
 
-    c = cost(params, ils, 5, labels, x, y)
-
-    # alpha = 2 * (c / 1000)
+    # c = cost(params, ils, 25, labels, x, y)
     params -= alpha * res
 
-    return unpack(params, ils, 5, labels)
-
-
-def fit_fmin(x, y):
-
-    ils = x.shape[1] if len(x.shape) > 1 else 1
-    labels = 2
-
-    t1 = randweights(ils, 10)
-    t2 = randweights(10, labels)
-    params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-
-    params = fmin_cg(cost, params, fprime=grad, params=(ils, 10, labels, x, y), maxiter=400)
-
-    return unpack(params, ils, 10, labels)
+    return unpack(params, ils, 25, labels)
 
 
 def extract(file):
     """Extract features from image"""
 
     # Resize and subtract mean pixel
-    img = cv2.resize(cv2.imread(file), (228, 228)).astype(np.float32)
+    img = cv2.resize(cv2.imread(file), (64, 64)).astype(np.float32)
     img[:, :, 0] -= 103.939
     img[:, :, 1] -= 116.779
     img[:, :, 2] -= 123.68
+
     # Normalize features
-    img = (img.flatten() - np.mean(img)) / np.std(img) / 5
+    img = (img.flatten() - np.mean(img)) / np.std(img)
 
     return np.array([img])
 
@@ -173,45 +158,40 @@ def parse(path):
         file, label = example
 
         X = extract(file)
-        # Component analysis
-        # pca = decomposition.PCA()
-        # pca.fit(X)
-        # pca.n_components = len(list(filter(lambda x: x >= 0.5, pca.explained_variance_)))
-        # X = pca.fit_transform(X)
-
         yield (X, np.array([classes.index(label)]))
 
-t1, t2 = None, None
-X, y = None, None
-
 # Build and save validation dict
-# X_valid = None
-# y_valid = np.array([], int)
-# for X, y in parse('/Users/snick/Downloads/dogscats/sample/valid'):
-#     if X_valid is None:
-#         X_valid = np.array(X)
-#     else:
-#         X_valid = np.vstack([X_valid, X])
+X_valid = None
+y_valid = np.array([], int)
+for X, y in parse('/Users/snick/Downloads/dogscats/valid'):
+    if X_valid is None:
+        X_valid = np.array(X)
+    else:
+        X_valid = np.vstack([X_valid, X])
 
-#     y_valid = np.append(y_valid, y)
+    y_valid = np.append(y_valid, y)
 
-# with bz2.BZ2File('valid.pbz2', 'wb') as file:
-#     pickle.dump([X_valid, y_valid], file, protocol=-1)
+with bz2.BZ2File('valid.pbz2', 'wb') as file:
+    pickle.dump([X_valid, y_valid], file, protocol=-1)
 
 # Load validation dict
 with bz2.BZ2File('valid.pbz2', 'rb') as file:
     X_valid, y_valid = pickle.load(file)
 
-for epoch in range(5):
+t1, t2 = None, None
+X, y = None, None
+labels = len(set(y_valid))
+
+for epoch in range(15):
     if epoch > 0:
         params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-        c = cost(params, X.shape[1], 5, 2, X, y)
+        c = cost(params, X.shape[1], 25, labels, X, y)
         loss, pred = predict(t1, t2, X_valid)
         score = accuracy_score(y_valid, pred)
         print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}'.format(epoch, score * 100, np.sum(loss), c))
 
     for X, y in parse('/Users/snick/Downloads/dogscats/train'):
-        t1, t2 = fit(X, y, t1, t2)
+        t1, t2 = fit(X, y, t1, t2, labels=labels)
 
 # Load pre-trained weights
 # with bz2.BZ2File('weights.pbz2', 'rb') as file:
