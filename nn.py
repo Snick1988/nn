@@ -184,6 +184,20 @@ def parse(path):
 t1, t2 = None, None
 X, y = None, None
 
+# Build and save validation dict
+# X_valid = None
+# y_valid = np.array([], int)
+# for X, y in parse('/Users/snick/Downloads/dogscats/sample/valid'):
+#     if X_valid is None:
+#         X_valid = np.array(X)
+#     else:
+#         X_valid = np.vstack([X_valid, X])
+
+#     y_valid = np.append(y_valid, y)
+
+# with bz2.BZ2File('valid.pbz2', 'wb') as file:
+#     pickle.dump([X_valid, y_valid], file, protocol=-1)
+
 # Load validation dict
 with bz2.BZ2File('valid.pbz2', 'rb') as file:
     X_valid, y_valid = pickle.load(file)
@@ -191,10 +205,10 @@ with bz2.BZ2File('valid.pbz2', 'rb') as file:
 for epoch in range(5):
     if epoch > 0:
         params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-        c = cost(params, X.shape[1], 3, 2, X, y)
+        c = cost(params, X.shape[1], 5, 2, X, y)
         loss, pred = predict(t1, t2, X_valid)
         score = accuracy_score(y_valid, pred)
-        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}'.format(epoch, score * 100, loss, c))
+        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}'.format(epoch, score * 100, np.sum(loss), c))
 
     for X, y in parse('/Users/snick/Downloads/dogscats/train'):
         t1, t2 = fit(X, y, t1, t2)
@@ -207,20 +221,6 @@ for epoch in range(5):
 # with bz2.BZ2File('weights.pbz2', 'wb') as file:
 #     pickle.dump([t1, t2], file, protocol=-1)
 
-# Build and save validation dict
-# X_valid = None
-# y_valid = np.array([], int)
-# for X, y in parse('/Users/snick/Downloads/dogscats/valid'):
-#     if X_valid is None:
-#         X_valid = np.array(X)
-#     else:
-#         X_valid = np.vstack([X_valid, X])
-
-#     y_valid = np.append(y_valid, y)
-
-# with bz2.BZ2File('valid.pbz2', 'wb') as file:
-#     pickle.dump([X_valid, y_valid], file, protocol=-1)
-
 loss, pred = predict(t1, t2, X_valid)
 score = accuracy_score(y_valid, pred)
-print('Final accuracy: {0:.2f}%; F1 score: {1:.2f}; Loss: {2:.4f}'.format(score * 100, f1_score(y_valid, pred, average='micro'), np.sum(loss)))
+print('Final accuracy: {0:.2f}%; Loss: {1:.4f}'.format(score * 100, np.sum(loss)))
