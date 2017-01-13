@@ -7,7 +7,6 @@ import bz2
 import pickle
 import numpy as np
 
-from scipy.optimize import fmin_cg
 from sklearn import decomposition
 from sklearn.metrics import accuracy_score
 
@@ -58,7 +57,7 @@ def cost(params, ils, hls, labels, x, y, lmbda=0.001):
     Y = np.eye(labels)[y]
 
     # Forward prop cost
-    J = (1 / m) * np.sum(-Y * np.log(a3).T - (1 - Y) * np.log(1 - a3).T) + lmbda / (2 * m) * np.sum(t1_reg + t2_reg)
+    J = (1 / m) * np.sum(-Y * np.log(a3 + 1e-6).T - (1 - Y) * np.log(1 - a3 + 1e-6).T) + lmbda / (2 * m) * np.sum(t1_reg + t2_reg)
 
     return J
 
@@ -105,28 +104,35 @@ def forward(x, theta1, theta2):
     return (a1, a2, a3, z2, m)
 
 
-def fit(x, y, t1, t2, labels=2, alpha=0.1):
+def fit(x, y, t1, t2, labels=2, alpha=0.1, momentum=0):
     """Training routine"""
     ils = x.shape[1] if len(x.shape) > 1 else 1
 
     if t1 is None or t2 is None:
-        t1 = randweights(ils, 25)
-        t2 = randweights(25, labels)
+        t1 = randweights(ils, 200)
+        t2 = randweights(200, labels)
 
     params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-    res = grad(params, ils, 25, labels, x, y)
+    res = grad(params, ils, 200, labels, x, y)
 
-    # c = cost(params, ils, 25, labels, x, y)
-    params -= alpha * res
+    # c = cost(params, ils, 10, labels, x, y)
 
-    return unpack(params, ils, 25, labels)
+    # Attempt at Nesterov momentum
+    momentum_prev = momentum
+    momentum = 0.9 * momentum - alpha * res
+    params += -0.9 * momentum_prev + (1 + 0.9) * momentum
+
+    # params -= alpha * res
+    t1, t2 = unpack(params, ils, 200, labels)
+
+    return t1, t2, momentum
 
 
 def extract(file):
     """Extract features from image"""
 
     # Resize and subtract mean pixel
-    img = cv2.resize(cv2.imread(file), (64, 64)).astype(np.float32)
+    img = cv2.resize(cv2.imread(file), (128, 128)).astype(np.float32)
     img[:, :, 0] -= 103.939
     img[:, :, 1] -= 116.779
     img[:, :, 2] -= 123.68
@@ -161,37 +167,52 @@ def parse(path):
         yield (X, np.array([classes.index(label)]))
 
 # Build and save validation dict
-X_valid = None
-y_valid = np.array([], int)
-for X, y in parse('/Users/snick/Downloads/dogscats/valid'):
-    if X_valid is None:
-        X_valid = np.array(X)
-    else:
-        X_valid = np.vstack([X_valid, X])
+# X_valid = None
+# y_valid = np.array([], int)
+# for X, y in parse('/Users/snick/Downloads/dogscats/valid'):
+#     if X_valid is None:
+#         X_valid = np.array(X)
+#     else:
+#         X_valid = np.vstack([X_valid, X])
 
-    y_valid = np.append(y_valid, y)
+#     y_valid = np.append(y_valid, y)
 
-with bz2.BZ2File('valid.pbz2', 'wb') as file:
-    pickle.dump([X_valid, y_valid], file, protocol=-1)
+# with bz2.BZ2File('valid.pbz2', 'wb') as file:
+#     pickle.dump([X_valid, y_valid], file, protocol=-1)
 
 # Load validation dict
 with bz2.BZ2File('valid.pbz2', 'rb') as file:
     X_valid, y_valid = pickle.load(file)
 
 t1, t2 = None, None
-X, y = None, None
+X_train = None
+y_train = np.array([], int)
 labels = len(set(y_valid))
+momentum = 0
 
-for epoch in range(15):
+for epoch in range(30):
     if epoch > 0:
         params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-        c = cost(params, X.shape[1], 25, labels, X, y)
+        c = cost(params, X.shape[1], 200, labels, X, y)
         loss, pred = predict(t1, t2, X_valid)
         score = accuracy_score(y_valid, pred)
         print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}'.format(epoch, score * 100, np.sum(loss), c))
 
+    count = 0
     for X, y in parse('/Users/snick/Downloads/dogscats/train'):
-        t1, t2 = fit(X, y, t1, t2, labels=labels)
+        if X_train is None:
+            X_train = np.array(X)
+        else:
+            X_train = np.vstack([X_train, X])
+
+        y_train = np.append(y_train, y)
+
+        if count % 15 == 0:
+            t1, t2, momentum = fit(X, y, t1, t2, labels=labels, momentum=momentum)
+            X_train = None
+            y_train = np.array([], int)
+
+        count += 1
 
 # Load pre-trained weights
 # with bz2.BZ2File('weights.pbz2', 'rb') as file:
