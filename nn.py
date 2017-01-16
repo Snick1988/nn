@@ -60,7 +60,7 @@ class NeuralNet:
             self.multiply = lambda x, y: x * y
 
     def sigmoid(self, x):
-        return 1.0 / (1.0 + np.exp(-x + 1e-6))
+        return 1.0 / (1.0 + np.exp(-x + self.settings['epsilon']))
 
     def sigmoid_prime(self, x):
         return self.sigmoid(x) * (1.0 - self.sigmoid(x))
@@ -100,7 +100,8 @@ class NeuralNet:
         m = self.bias.shape[1]
 
         # Forward prop cost
-        J = (1 / m) * np.sum(-Y * np.log(activations[-1] + 1e-6).T - (1 - Y) * np.log(1 - activations[-1] + 1e-6).T) + self.settings['lambda'] / (2 * m) * np.sum(regularizations)
+        eps = self.settings['epsilon']
+        J = (1 / m) * np.sum(-Y * np.log(activations[-1] + eps).T - (1 - Y) * np.log(1 - activations[-1] + eps).T) + self.settings['lambda'] / (2 * m) * np.sum(regularizations)
 
         return J
 
@@ -242,10 +243,9 @@ class NeuralNet:
 
         return (X_valid, y_valid)
 
-start = time.time()
-
+# Example usage
 net = NeuralNet()
-X_valid, y_valid = net.load_validation('/Users/snick/Downloads/dogscats/sample/valid')
+X_valid, y_valid = net.load_validation(os.path.join(os.getcwd(), 'dogscats', 'sample', 'valid'))
 
 X, X_train = None, None
 y, y_train = np.array([], int), np.array([], int)
@@ -260,7 +260,7 @@ for epoch in range(30):
         print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), cost, (time.time() - start) * 100))
 
     count = 0
-    for X, y in net.parse('/Users/snick/Downloads/dogscats/sample/train'):
+    for X, y in net.parse(os.path.join(os.getcwd(), 'dogscats', 'sample', 'train')):
         if X_train is None:
             X_train = np.array(X)
         else:
@@ -268,7 +268,7 @@ for epoch in range(30):
 
         y_train = np.append(y_train, y)
 
-        if count % 5 == 0:
+        if count % 15 == 0:
             net.fit(X_train, y_train)
             X_train = None
             y_train = np.array([], int)
