@@ -4,202 +4,263 @@
 import os
 import cv2
 import bz2
+import time
 import pickle
 import numpy as np
 
+from theano import tensor as T
+from theano import function
 from sklearn import decomposition
 from sklearn.metrics import accuracy_score
 
 
-def sigmoid(x):
-    return 1.0/(1.0 + np.exp(-x))
+class NeuralNet:
 
+    settings = {
+        'num_layers': 2,
+        'hidden_layer_size': 100,
+        'labels': 2,
+        'epsilon': 1e-6,
+        'alpha': 0.01,
+        'lambda': 0.001,
+        'momentum': 0.9,
+        'with_gpu': False,
+        'resize': (128, 128)
+    }
 
-def sigmoid_prime(x):
-    return sigmoid(x)*(1.0-sigmoid(x))
+    weights = []
+    momentums = []
 
+    def __init__(self, settings={}):
+        self.settings.update(settings)
+        self.settings['input_layer_size'] = self.settings['resize'][0] * self.settings['resize'][1] * 3
 
-def predict(theta1, theta2, x):
-    """Predict output using learned weights"""
-    m = x.shape[0]
+        for index in range(self.settings['num_layers']):
+            if index == 0:
+                self.weights.append(self.randweights(self.settings['input_layer_size'], self.settings['hidden_layer_size']))
+            else:
+                self.weights.append(self.randweights(self.settings['hidden_layer_size'], self.settings['labels']))
 
-    h1 = sigmoid(np.hstack((np.ones([m, 1]), x)).dot(theta1.T))
-    h2 = sigmoid(np.hstack((np.ones([m, 1]), h1)).dot(theta2.T))
+            # Initialize moments for each layer
+            self.momentums.append(0)
 
-    loss = 1 - h2.max(axis=1)
+        if self.settings['with_gpu']:
+            x = T.dmatrix('x')
+            y = T.dmatrix('y')
+            f_dot = T.dot(x, y)
+            f_elem = x * y
 
-    return (loss, h2.argmax(axis=1))
+            tensor_dot = function([x, y], f_dot)
+            tensor_elemwise = function([x, y], f_elem)
 
+            self.dot = tensor_dot
+            self.multiply = tensor_elemwise
+        else:
+            self.dot = np.dot
+            self.multiply = lambda x, y: x * y
 
-def randweights(l_in, l_out):
-    """Random weights initialization"""
-    m = np.random.random((l_out, l_in + 1))
-    return m * np.sqrt(2.0 / m)
+    def sigmoid(self, x):
+        return 1.0 / (1.0 + np.exp(-x + 1e-6))
 
+    def sigmoid_prime(self, x):
+        return self.sigmoid(x) * (1.0 - self.sigmoid(x))
 
-def unpack(params, ils, hls, labels):
-    """Extract theta matrices from row vector"""
-    theta1 = params[0: hls * (ils + 1)].reshape((hls, (ils + 1)))
-    theta2 = params[(hls * (ils + 1)):].reshape((labels, (hls + 1)))
+    def predict(self, x):
+        """Predict output using learned weights"""
+        self.bias = np.ones([x.shape[0], 1])
+        for index, weight in enumerate(self.weights):
+            if index == 0:
+                h = self.sigmoid(self.dot(np.hstack([self.bias, x]), weight.T))
+            else:
+                h = self.sigmoid(self.dot(np.hstack([self.bias, h]), weight.T))
 
-    return (theta1, theta2)
+        loss = 1 - h.max(axis=1)
 
+        return (loss, h.argmax(axis=1))
 
-def cost(params, ils, hls, labels, x, y, lmbda=0.001):
-    """Cost function"""
+    def randweights(self, l_in, l_out):
+        """Random weights initialization"""
+        m = np.random.random((l_out, l_in + 1))
+        return m * np.sqrt(2.0 / m)
 
-    theta1, theta2 = unpack(params, ils, hls, labels)
-    a1, a2, a3, z2, m = forward(x, theta1, theta2)
+    def cost(self, x, y):
+        """Cost function"""
 
-    t1_reg = np.sum(theta1[:, 1:] ** 2)
-    t2_reg = np.sum(theta2[:, 1:] ** 2)
+        self.bias = np.ones([1, x.shape[0]])
 
-    Y = np.eye(labels)[y]
+        activations, errors = self.forward(x)
+        regularizations = []
 
-    # Forward prop cost
-    J = (1 / m) * np.sum(-Y * np.log(a3 + 1e-6).T - (1 - Y) * np.log(1 - a3 + 1e-6).T) + lmbda / (2 * m) * np.sum(t1_reg + t2_reg)
+        for weight in self.weights:
+            regularizations.append(np.sum(weight[:, 1:] ** 2))
 
-    return J
+        Y = np.eye(self.settings['labels'])[y]
 
+        # Number of examples
+        m = self.bias.shape[1]
 
-def grad(params, ils, hls, labels, x, y, lmbda=0.001):
-    """Compute gradient for hypothesis Theta"""
+        # Forward prop cost
+        J = (1 / m) * np.sum(-Y * np.log(activations[-1] + 1e-6).T - (1 - Y) * np.log(1 - activations[-1] + 1e-6).T) + self.settings['lambda'] / (2 * m) * np.sum(regularizations)
 
-    theta1, theta2 = unpack(params, ils, hls, labels)
+        return J
 
-    a1, a2, a3, z2, m = forward(x, theta1, theta2)
+    def grad(self, x, Y):
+        """Compute gradient for hypothesis Theta"""
 
-    Y = np.eye(labels)[y]
-    d3 = a3 - Y.T
+        activations, errors = self.forward(x)
 
-    d2 = np.dot(theta2.T, d3) * (np.vstack([np.ones([1, m]), sigmoid_prime(z2)]))
-    d3 = d3.T
-    d2 = d2[1:, :].T
+        derivatives = []
+        derivatives.append(activations[-1] - Y.T)
 
-    t1_grad = (1 / m) * np.dot(d2.T, a1.T)
-    t2_grad = (1 / m) * np.dot(d3.T, a2.T)
+        # Compute derivative for each layer, except 1, starting from the last
+        for index in range(1, self.settings['num_layers']):
+            derivative = self.multiply(self.dot(self.weights[-index].T, derivatives[-index]), np.vstack([self.bias, self.sigmoid_prime(errors[-index])]))
+            derivatives.append(derivative)
 
-    theta1[0] = np.zeros([1, theta1.shape[1]])
-    theta2[0] = np.zeros([1, theta2.shape[1]])
+        derivatives[0] = derivatives[0].T
+        # Remove bias from derivatives
+        for index in range(1, len(derivatives)):
+            derivatives[index] = derivatives[index][1:, :].T
 
-    t1_grad = t1_grad + (lmbda / m) * theta1
-    t2_grad = t2_grad + (lmbda / m) * theta2
+        gradients = []
+        # Number of examples
+        m = self.bias.shape[1]
 
-    return np.concatenate([t1_grad.reshape(-1), t2_grad.reshape(-1)])
+        for index, weight in enumerate(self.weights):
+            weight_gradient = (1 / m) * self.dot(derivatives[-index - 1].T, activations[index].T)
+            weight[0] = np.zeros([1, weight.shape[1]])
+            gradient = weight_gradient + (self.settings['lambda'] / m) * weight
 
+            gradients.append(gradient)
 
-def forward(x, theta1, theta2):
-    """Forward propagation"""
+        return gradients
 
-    m = x.shape[0]
+    def forward(self, x):
+        """Forward propagation"""
 
-    # Forward prop
-    a1 = np.vstack((np.ones([1, m]), x.T))
+        activations = []
+        errors = []
 
-    z2 = np.dot(theta1, a1)
-    a2 = np.vstack((np.ones([1, m]), sigmoid(z2)))
+        # Forward prop
+        activations.append(np.vstack((self.bias, x.T)))
 
-    a3 = sigmoid(np.dot(theta2, a2))
+        # Compute errors for each activation
+        for weight in self.weights[:-1]:
+            errors.append(self.dot(weight, activations[-1]))
+            activations.append(np.vstack([self.bias, self.sigmoid(errors[-1])]))
 
-    return (a1, a2, a3, z2, m)
+        activations.append(self.sigmoid(self.dot(self.weights[-1], activations[-1])))
 
+        return (activations, errors)
 
-def fit(x, y, t1, t2, labels=2, alpha=0.1, momentum=0):
-    """Training routine"""
-    ils = x.shape[1] if len(x.shape) > 1 else 1
+    def fit(self, x, y):
+        """Training routine"""
+        self.bias = np.ones([1, x.shape[0]])
 
-    if t1 is None or t2 is None:
-        t1 = randweights(ils, 200)
-        t2 = randweights(200, labels)
+        Y = np.eye(self.settings['labels'])[y]
+        self.num_examples = x.shape[0]
 
-    params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-    res = grad(params, ils, 200, labels, x, y)
+        gradients = self.grad(x, Y)
+        for index, gradient in enumerate(gradients):
+            self.weights[index] += self.nesterov_momentum(gradient, index)
 
-    # c = cost(params, ils, 10, labels, x, y)
+    def nesterov_momentum(self, gradient, index):
+        momentum = self.settings['momentum'] * self.momentums[index] - self.settings['alpha'] * gradient
+        coef = -self.settings['momentum'] * self.momentums[index] + (1 + self.settings['momentum']) * momentum
 
-    # Attempt at Nesterov momentum
-    momentum_prev = momentum
-    momentum = 0.9 * momentum - alpha * res
-    params += -0.9 * momentum_prev + (1 + 0.9) * momentum
+        # Save momentum for next iteration
+        self.momentums[index] = momentum
 
-    # params -= alpha * res
-    t1, t2 = unpack(params, ils, 200, labels)
+        return coef
 
-    return t1, t2, momentum
+    def extract_features(self, file):
+        """Extract features from image"""
 
+        # Resize and subtract mean pixel
+        img = cv2.resize(cv2.imread(file), self.settings['resize']).astype(np.float32)
+        img[:, :, 0] -= 103.939
+        img[:, :, 1] -= 116.779
+        img[:, :, 2] -= 123.68
 
-def extract(file):
-    """Extract features from image"""
+        # Normalize features
+        img = (img.flatten() - np.mean(img)) / np.std(img)
 
-    # Resize and subtract mean pixel
-    img = cv2.resize(cv2.imread(file), (128, 128)).astype(np.float32)
-    img[:, :, 0] -= 103.939
-    img[:, :, 1] -= 116.779
-    img[:, :, 2] -= 123.68
+        return np.array([img])
 
-    # Normalize features
-    img = (img.flatten() - np.mean(img)) / np.std(img)
+    def parse(self, path):
+        """Parse data folder and return X and y"""
+        examples = []
+        for cwd, dirs, files in os.walk(path):
+            if cwd == path:
+                if not dirs:
+                    raise Exception('Invalid folder structure: expected folders divided by classes')
 
-    return np.array([img])
+                classes = dirs
+                continue
 
+            current_class = os.path.basename(cwd)
+            for file in [os.path.join(cwd, file) for file in files]:
+                examples.append((file, current_class))
 
-def parse(path):
-    """Parse data folder and return X and y"""
-    examples = []
-    for cwd, dirs, files in os.walk(path):
-        if cwd == path:
-            if not dirs:
-                raise Exception('Invalid folder structure: expected folders divided by classes')
+        np.random.shuffle(examples)
 
-            classes = dirs
-            continue
+        for example in examples:
+            file, label = example
 
-        current_class = os.path.basename(cwd)
-        for file in [os.path.join(cwd, file) for file in files]:
-            examples.append((file, current_class))
+            X = self.extract_features(file)
+            yield (X, np.array([classes.index(label)]))
 
-    np.random.shuffle(examples)
+    def save_checkpoint(self):
+        with bz2.BZ2File('weights.pbz2', 'wb') as file:
+            pickle.dump(self.weights, file, protocol=-1)
 
-    for example in examples:
-        file, label = example
+    def load_checkpoint(self):
+        with bz2.BZ2File('weights.pbz2', 'rb') as file:
+            self.weigths = pickle.load(file)
 
-        X = extract(file)
-        yield (X, np.array([classes.index(label)]))
+    def load_validation(self, path):
+        try:
+            # Try loading validation set from file
+            with bz2.BZ2File('valid.pbz2', 'rb') as file:
+                X_valid, y_valid = pickle.load(file)
 
-# Build and save validation dict
-# X_valid = None
-# y_valid = np.array([], int)
-# for X, y in parse('/Users/snick/Downloads/dogscats/valid'):
-#     if X_valid is None:
-#         X_valid = np.array(X)
-#     else:
-#         X_valid = np.vstack([X_valid, X])
+        except FileNotFoundError:
+            # If loading fails - re-parse data and save to file
+            X_valid = None
+            y_valid = np.array([], int)
 
-#     y_valid = np.append(y_valid, y)
+            for X, y in self.parse(path):
+                if X_valid is None:
+                    X_valid = np.array(X)
+                else:
+                    X_valid = np.vstack([X_valid, X])
 
-# with bz2.BZ2File('valid.pbz2', 'wb') as file:
-#     pickle.dump([X_valid, y_valid], file, protocol=-1)
+                y_valid = np.append(y_valid, y)
 
-# Load validation dict
-with bz2.BZ2File('valid.pbz2', 'rb') as file:
-    X_valid, y_valid = pickle.load(file)
+            with bz2.BZ2File('valid.pbz2', 'wb') as file:
+                pickle.dump([X_valid, y_valid], file, protocol=-1)
 
-t1, t2 = None, None
-X_train = None
-y_train = np.array([], int)
-labels = len(set(y_valid))
-momentum = 0
+        return (X_valid, y_valid)
+
+start = time.time()
+
+net = NeuralNet()
+X_valid, y_valid = net.load_validation('/Users/snick/Downloads/dogscats/sample/valid')
+
+X, X_train = None, None
+y, y_train = np.array([], int), np.array([], int)
 
 for epoch in range(30):
+    start = time.time()
+
     if epoch > 0:
-        params = np.concatenate([t1.reshape(-1), t2.reshape(-1)])
-        c = cost(params, X.shape[1], 200, labels, X, y)
-        loss, pred = predict(t1, t2, X_valid)
+        cost = net.cost(X, y)
+        loss, pred = net.predict(X_valid)
         score = accuracy_score(y_valid, pred)
-        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}'.format(epoch, score * 100, np.sum(loss), c))
+        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), cost, (time.time() - start) * 100))
 
     count = 0
-    for X, y in parse('/Users/snick/Downloads/dogscats/train'):
+    for X, y in net.parse('/Users/snick/Downloads/dogscats/sample/train'):
         if X_train is None:
             X_train = np.array(X)
         else:
@@ -207,21 +268,15 @@ for epoch in range(30):
 
         y_train = np.append(y_train, y)
 
-        if count % 15 == 0:
-            t1, t2, momentum = fit(X, y, t1, t2, labels=labels, momentum=momentum)
+        if count % 5 == 0:
+            net.fit(X_train, y_train)
             X_train = None
             y_train = np.array([], int)
 
         count += 1
 
-# Load pre-trained weights
-# with bz2.BZ2File('weights.pbz2', 'rb') as file:
-#     t1, t2 = pickle.load(file)
+    net.save_checkpoint()
 
-# Save weights
-# with bz2.BZ2File('weights.pbz2', 'wb') as file:
-#     pickle.dump([t1, t2], file, protocol=-1)
-
-loss, pred = predict(t1, t2, X_valid)
+loss, pred = net.predict(X_valid)
 score = accuracy_score(y_valid, pred)
 print('Final accuracy: {0:.2f}%; Loss: {1:.4f}'.format(score * 100, np.sum(loss)))
