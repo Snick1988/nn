@@ -21,7 +21,7 @@ class NeuralNet:
         'hidden_layer_size': 100,
         'labels': 2,
         'epsilon': 1e-6,
-        'alpha': 0.01,
+        'alpha': 0.3,
         'lambda': 0.001,
         'momentum': 0.9,
         'with_gpu': False,
@@ -213,7 +213,11 @@ class NeuralNet:
 
     def save_checkpoint(self):
         with bz2.BZ2File('weights.pbz2', 'wb') as file:
-            pickle.dump(self.weights, file, protocol=-1)
+            try:
+                pickle.dump(self.weights, file, protocol=-1)
+            # Make sure the file is actually written
+            except KeyboardInterrupt:
+                pass
 
     def load_checkpoint(self):
         with bz2.BZ2File('weights.pbz2', 'rb') as file:
@@ -245,12 +249,17 @@ class NeuralNet:
 
 # Example usage
 net = NeuralNet()
-X_valid, y_valid = net.load_validation(os.path.join(os.getcwd(), 'dogscats', 'sample', 'valid'))
+X_valid, y_valid = net.load_validation(os.path.join(os.getcwd(), 'dogscats', 'valid'))
+
+try:
+    net.load_checkpoint()
+except:
+    print('No saved weights found, will use random')
 
 X, X_train = None, None
 y, y_train = np.array([], int), np.array([], int)
 
-for epoch in range(30):
+for epoch in range(200):
     start = time.time()
 
     if epoch > 0:
@@ -260,7 +269,7 @@ for epoch in range(30):
         print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), cost, (time.time() - start) * 100))
 
     count = 0
-    for X, y in net.parse(os.path.join(os.getcwd(), 'dogscats', 'sample', 'train')):
+    for X, y in net.parse(os.path.join(os.getcwd(), 'dogscats', 'train')):
         if X_train is None:
             X_train = np.array(X)
         else:
