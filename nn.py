@@ -21,7 +21,7 @@ class NeuralNet:
         'hidden_layer_size': 100,
         'labels': 2,
         'epsilon': 1e-6,
-        'alpha': 0.3,
+        'alpha': 0.001,
         'lambda': 0.001,
         'momentum': 0.9,
         'with_gpu': False,
@@ -260,15 +260,20 @@ X, X_train = None, None
 y, y_train = np.array([], int), np.array([], int)
 
 for epoch in range(200):
-    start = time.time()
 
     if epoch > 0:
         cost = net.cost(X, y)
         loss, pred = net.predict(X_valid)
         score = accuracy_score(y_valid, pred)
-        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), cost, (time.time() - start) * 100))
+        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), cost, (time.time() - start)))
+
+    # Halve learning rate every 50 epochs
+    if epoch % 50 == 0:
+        net.settings['alpha'] /= 2
 
     count = 0
+    start = time.time()
+
     for X, y in net.parse(os.path.join(os.getcwd(), 'dogscats', 'train')):
         if X_train is None:
             X_train = np.array(X)
