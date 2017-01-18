@@ -17,32 +17,53 @@ from sklearn.metrics import accuracy_score
 class NeuralNet:
 
     settings = {
-        'num_layers': 2,
-        'hidden_layer_size': 100,
+        'layers': [
+            # (neurons per layer, activation function)
+            (25, 'sigmoid'),
+        ],
         'labels': 2,
-        'epsilon': 1e-6,
-        'alpha': 0.001,
+        'epsilon': 1e-8,
+        'alpha': 0.3,
         'lambda': 0.001,
         'momentum': 0.9,
+        'resize': (128, 128),
+        # Optimizations
         'with_gpu': False,
-        'resize': (128, 128)
+        'lr_optimizer': 'adam'
     }
 
     weights = []
-    momentums = []
+    learning_rates = []
+    t = 1
 
     def __init__(self, settings={}):
         self.settings.update(settings)
-        self.settings['input_layer_size'] = self.settings['resize'][0] * self.settings['resize'][1] * 3
 
-        for index in range(self.settings['num_layers']):
-            if index == 0:
-                self.weights.append(self.randweights(self.settings['input_layer_size'], self.settings['hidden_layer_size']))
-            else:
-                self.weights.append(self.randweights(self.settings['hidden_layer_size'], self.settings['labels']))
+        ils = self.settings['resize'][0] * self.settings['resize'][1] * 3
+        self.settings['layers'].insert(0, (ils, 'sigmoid'))
 
-            # Initialize moments for each layer
-            self.momentums.append(0)
+        for index in range(len(self.settings['layers'])):
+            size, _ = self.settings['layers'][index]
+            try:
+                next_layer_size = self.settings['layers'][index + 1][0]
+            except:
+                next_layer_size = self.settings['labels']
+
+            # Initialize weights for each layer
+            self.weights.append(self.randweights(size, next_layer_size))
+
+            # Initialize learning rate optimizations for each layer
+            init = 0
+            if self.settings['lr_optimizer'] == 'adam':
+                init = (0, 0)
+            self.learning_rates.append(init)
+
+        # Initialize lr optimizer
+        try:
+            self.optimizer = getattr(self, self.settings['lr_optimizer'])
+        except AttributeError:
+            print('Invalid optimizer specified, using default (Nesterov) instead')
+            self.optimizer = self.nesterov_momentum
 
         if self.settings['with_gpu']:
             x = T.dmatrix('x')
@@ -64,6 +85,12 @@ class NeuralNet:
 
     def sigmoid_prime(self, x):
         return self.sigmoid(x) * (1.0 - self.sigmoid(x))
+
+    def reLU(self, x):
+        return np.maximum(x, 0, x)
+
+    def reLU_prime(self, x):
+        return 1. * (x > 0)
 
     def predict(self, x):
         """Predict output using learned weights"""
@@ -114,21 +141,22 @@ class NeuralNet:
         derivatives.append(activations[-1] - Y.T)
 
         # Compute derivative for each layer, except 1, starting from the last
-        for index in range(1, self.settings['num_layers']):
-            derivative = self.multiply(self.dot(self.weights[-index].T, derivatives[-index]), np.vstack([self.bias, self.sigmoid_prime(errors[-index])]))
-            derivatives.append(derivative)
+        for index in range(1, len(self.settings['layers'])):
+            drv_func = getattr(self, '{}_prime'.format(self.settings['layers'][index][1]))
+            derivative = self.multiply(self.dot(self.weights[-index].T, derivatives[-index]), np.vstack([self.bias, drv_func(errors[-index])]))
+            derivatives.insert(0, derivative[1:, :])
 
-        derivatives[0] = derivatives[0].T
+        derivatives[-1] = derivatives[-1].T
         # Remove bias from derivatives
-        for index in range(1, len(derivatives)):
-            derivatives[index] = derivatives[index][1:, :].T
+        for index in range(len(derivatives) - 1):
+            derivatives[index] = derivatives[index].T
 
         gradients = []
         # Number of examples
         m = self.bias.shape[1]
 
         for index, weight in enumerate(self.weights):
-            weight_gradient = (1 / m) * self.dot(derivatives[-index - 1].T, activations[index].T)
+            weight_gradient = (1 / m) * self.dot(derivatives[index].T, activations[index].T)
             weight[0] = np.zeros([1, weight.shape[1]])
             gradient = weight_gradient + (self.settings['lambda'] / m) * weight
 
@@ -146,9 +174,10 @@ class NeuralNet:
         activations.append(np.vstack((self.bias, x.T)))
 
         # Compute errors for each activation
-        for weight in self.weights[:-1]:
+        for index, weight in enumerate(self.weights[:-1], start=1):
+            act_func = getattr(self, self.settings['layers'][index][1])
             errors.append(self.dot(weight, activations[-1]))
-            activations.append(np.vstack([self.bias, self.sigmoid(errors[-1])]))
+            activations.append(np.vstack([self.bias, act_func(errors[-1])]))
 
         activations.append(self.sigmoid(self.dot(self.weights[-1], activations[-1])))
 
@@ -163,16 +192,30 @@ class NeuralNet:
 
         gradients = self.grad(x, Y)
         for index, gradient in enumerate(gradients):
-            self.weights[index] += self.nesterov_momentum(gradient, index)
+            self.weights[index] += self.optimizer(gradient, index)
 
     def nesterov_momentum(self, gradient, index):
-        momentum = self.settings['momentum'] * self.momentums[index] - self.settings['alpha'] * gradient
-        coef = -self.settings['momentum'] * self.momentums[index] + (1 + self.settings['momentum']) * momentum
+        momentum = self.settings['momentum'] * self.learning_rates[index] - self.settings['alpha'] * gradient
+        coef = -self.settings['momentum'] * self.learning_rates[index] + (1 + self.settings['momentum']) * momentum
 
         # Save momentum for next iteration
-        self.momentums[index] = momentum
+        self.learning_rates[index] = momentum
 
         return coef
+
+    def adam(self, gradient, index):
+        m = 0.9 * self.learning_rates[index][0] + (1 - 0.9) * gradient
+        v = 0.999 * self.learning_rates[index][1] + (1 - 0.999) * (gradient ** 2)
+
+        # Bias correction
+        m /= (1 - 0.9 ** self.t)
+        v /= (1 - 0.999 ** self.t)
+        self.t += 1
+
+        # Save momentum for next iteration
+        self.learning_rates[index] = (m, v)
+
+        return -self.settings['alpha'] * m / (np.sqrt(v) + self.settings['epsilon'])
 
     def extract_features(self, file):
         """Extract features from image"""
@@ -282,7 +325,7 @@ for epoch in range(200):
 
         y_train = np.append(y_train, y)
 
-        if count % 15 == 0:
+        if count % 50 == 0:
             net.fit(X_train, y_train)
             X_train = None
             y_train = np.array([], int)
