@@ -23,7 +23,7 @@ class NeuralNet:
         ],
         'labels': 2,
         'epsilon': 1e-8,
-        'alpha': 0.3,
+        'alpha': 0.1,
         'lambda': 0.001,
         'momentum': 0.9,
         'resize': (128, 128),
@@ -208,14 +208,14 @@ class NeuralNet:
         v = 0.999 * self.learning_rates[index][1] + (1 - 0.999) * (gradient ** 2)
 
         # Bias correction
-        m /= (1 - 0.9 ** self.t)
-        v /= (1 - 0.999 ** self.t)
+        mc = m / (1 - 0.9 ** self.t)
+        vc = v / (1 - 0.999 ** self.t)
         self.t += 1
 
         # Save momentum for next iteration
         self.learning_rates[index] = (m, v)
 
-        return -self.settings['alpha'] * m / (np.sqrt(v) + self.settings['epsilon'])
+        return -self.settings['alpha'] * mc / (np.sqrt(vc) + self.settings['epsilon'])
 
     def extract_features(self, file):
         """Extract features from image"""
@@ -301,18 +301,24 @@ except:
 
 X, X_train = None, None
 y, y_train = np.array([], int), np.array([], int)
+cost = 10 ** 4
 
 for epoch in range(200):
 
     if epoch > 0:
-        cost = net.cost(X, y)
+        current_cost = net.cost(X, y)
         loss, pred = net.predict(X_valid)
         score = accuracy_score(y_valid, pred)
-        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), cost, (time.time() - start)))
+        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), current_cost, (time.time() - start)))
 
-    # Halve learning rate every 50 epochs
-    if epoch % 50 == 0:
-        net.settings['alpha'] /= 2
+        # Increase learning rate by 10% if cost is decreasing
+        if current_cost < cost:
+            net.settings['alpha'] *= 1.1
+        # Halve learning rate is cost is increasing
+        else:
+            net.settings['alpha'] /= 2.0
+
+        cost = current_cost
 
     count = 0
     start = time.time()
