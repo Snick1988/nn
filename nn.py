@@ -19,11 +19,11 @@ class NeuralNet:
     settings = {
         'layers': [
             # (neurons per layer, activation function)
-            (25, 'sigmoid'),
+            (125, 'sigmoid'),
         ],
         'labels': 2,
         'epsilon': 1e-8,
-        'alpha': 0.1,
+        'alpha': 0.0001,
         'lambda': 0.001,
         'momentum': 0.9,
         'resize': (128, 128),
@@ -68,14 +68,9 @@ class NeuralNet:
         if self.settings['with_gpu']:
             x = T.dmatrix('x')
             y = T.dmatrix('y')
-            f_dot = T.dot(x, y)
-            f_elem = x * y
 
-            tensor_dot = function([x, y], f_dot)
-            tensor_elemwise = function([x, y], f_elem)
-
-            self.dot = tensor_dot
-            self.multiply = tensor_elemwise
+            self.dot = function([x, y], T.dot(x, y))
+            self.multiply = function([x, y], x * y)
         else:
             self.dot = np.dot
             self.multiply = lambda x, y: x * y
@@ -309,19 +304,29 @@ for epoch in range(200):
         current_cost = net.cost(X, y)
         loss, pred = net.predict(X_valid)
         score = accuracy_score(y_valid, pred)
-        print('Pass: {0}; Accuracy: {1:.2f}%; Loss: {2:.2f}; Cost: {3:.6f}; Time spent: {4:.2f} seconds'.format(epoch, score * 100, np.sum(loss), current_cost, (time.time() - start)))
-
         # Increase learning rate by 10% if cost is decreasing
         if current_cost < cost:
             net.settings['alpha'] *= 1.1
-        # Halve learning rate is cost is increasing
+        # Reduce learning rate by 50% if cost is increasing
         else:
-            net.settings['alpha'] /= 2.0
+            net.settings['alpha'] /= 1.5
+
+        log_data = [
+            epoch,
+            score * 100,
+            np.sum(loss),
+            current_cost,
+            (time.time() - start),
+            net.settings['alpha']
+        ]
+
+        print('Pass: {}; Accuracy: {:.2f}%; Loss: {:.2f}; Cost: {:.6f}; Time spent: {:.2f} seconds; Learning rate: {:.6f}'.format(*log_data))
 
         cost = current_cost
 
     count = 0
     start = time.time()
+    net.t = 1
 
     for X, y in net.parse(os.path.join(os.getcwd(), 'dogscats', 'train')):
         if X_train is None:
@@ -331,7 +336,7 @@ for epoch in range(200):
 
         y_train = np.append(y_train, y)
 
-        if count % 50 == 0:
+        if count % 1 == 0:
             net.fit(X_train, y_train)
             X_train = None
             y_train = np.array([], int)
