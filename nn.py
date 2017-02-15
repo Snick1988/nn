@@ -19,14 +19,14 @@ class NeuralNet:
     settings = {
         'layers': [
             # (neurons per layer, activation function)
-            (125, 'sigmoid'),
+            (300, 'sigmoid'),
         ],
         'labels': 2,
         'epsilon': 1e-8,
-        'alpha': 0.0001,
-        'lambda': 0.001,
+        'alpha': 0.001,
+        'lambda': 1,
         'momentum': 0.9,
-        'resize': (128, 128),
+        'resize': (124, 124),
         # Optimizations
         'with_gpu': False,
         'lr_optimizer': 'adam'
@@ -135,7 +135,7 @@ class NeuralNet:
         derivatives = []
         derivatives.append(activations[-1] - Y.T)
 
-        # Compute derivative for each layer, except 1, starting from the last
+        # Compute derivative for each layer, except input, starting from the last
         for index in range(1, len(self.settings['layers'])):
             drv_func = getattr(self, '{}_prime'.format(self.settings['layers'][index][1]))
             derivative = self.multiply(self.dot(self.weights[-index].T, derivatives[-index]), np.vstack([self.bias, drv_func(errors[-index])]))
@@ -259,7 +259,7 @@ class NeuralNet:
 
     def load_checkpoint(self):
         with bz2.BZ2File('weights.pbz2', 'rb') as file:
-            self.weigths = pickle.load(file)
+            self.weights = pickle.load(file)
 
     def load_validation(self, path):
         try:
@@ -298,7 +298,7 @@ X, X_train = None, None
 y, y_train = np.array([], int), np.array([], int)
 cost = 10 ** 4
 
-for epoch in range(200):
+for epoch in range(400):
 
     if epoch > 0:
         current_cost = net.cost(X, y)
@@ -320,7 +320,7 @@ for epoch in range(200):
             net.settings['alpha']
         ]
 
-        print('Pass: {}; Accuracy: {:.2f}%; Loss: {:.2f}; Cost: {:.6f}; Time spent: {:.2f} seconds; Learning rate: {:.6f}'.format(*log_data))
+        print('Pass: {}; Accuracy: {:.2f}%; Loss: {:.2f}; Cost: {:.6f}; Time spent: {:.2f} seconds; Learning rate: {:.10f}'.format(*log_data))
 
         cost = current_cost
 
@@ -336,7 +336,7 @@ for epoch in range(200):
 
         y_train = np.append(y_train, y)
 
-        if count % 1 == 0:
+        if count % 10 == 0:
             net.fit(X_train, y_train)
             X_train = None
             y_train = np.array([], int)
