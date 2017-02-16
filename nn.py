@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import sys
 import cv2
 import bz2
 import time
@@ -45,11 +44,6 @@ class NeuralNet:
         self.settings.update(settings)
         self.load_validation()
 
-        try:
-            self.load_checkpoint()
-        except:
-            print('No saved weights found, will use random')
-
         ils = self.settings['resize'][0] * self.settings['resize'][1] * 3
         self.settings['layers'].insert(0, (ils, 'sigmoid'))
 
@@ -68,6 +62,11 @@ class NeuralNet:
             if self.settings['lr_optimizer'] == 'adam':
                 init = (0, 0)
             self.learning_rates.append(init)
+
+        try:
+            self.load_checkpoint()
+        except:
+            print('No saved weights found, will use random')
 
         # Initialize lr optimizer
         try:
