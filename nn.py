@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import cv2
 import bz2
 import time
 import pickle
 import numpy as np
+import argparse
 
 from theano import tensor as T
 from theano import function
@@ -21,9 +23,11 @@ class NeuralNet:
             # (neurons per layer, activation function)
             (300, 'sigmoid'),
         ],
-        'labels': 2,
+        'alpha': 0.0003,
+        'batch': 10,
+        'epochs': 400,
         'epsilon': 1e-8,
-        'alpha': 0.001,
+        'labels': 2,
         'lambda': 1,
         'momentum': 0.9,
         'resize': (124, 124),
@@ -37,7 +41,14 @@ class NeuralNet:
     t = 1
 
     def __init__(self, settings={}):
+
         self.settings.update(settings)
+        self.load_validation()
+
+        try:
+            self.load_checkpoint()
+        except:
+            print('No saved weights found, will use random')
 
         ils = self.settings['resize'][0] * self.settings['resize'][1] * 3
         self.settings['layers'].insert(0, (ils, 'sigmoid'))
@@ -230,24 +241,34 @@ class NeuralNet:
         """Parse data folder and return X and y"""
         examples = []
         for cwd, dirs, files in os.walk(path):
-            if cwd == path:
-                if not dirs:
-                    raise Exception('Invalid folder structure: expected folders divided by classes')
+            # Yield features and label in training mode
+            if self.settings['mode'] == 'train':
+                if cwd == path:
+                    if not dirs:
+                        raise Exception('Invalid folder structure: expected folders divided by classes')
 
-                classes = dirs
-                continue
+                    classes = dirs
+                    continue
 
-            current_class = os.path.basename(cwd)
-            for file in [os.path.join(cwd, file) for file in files]:
-                examples.append((file, current_class))
+                current_class = os.path.basename(cwd)
+                for file in [os.path.join(cwd, file) for file in files]:
+                    examples.append((file, current_class))
 
-        np.random.shuffle(examples)
+                np.random.shuffle(examples)
 
-        for example in examples:
-            file, label = example
+                for example in examples:
+                    file, label = example
 
-            X = self.extract_features(file)
-            yield (X, np.array([classes.index(label)]))
+                    X = self.extract_features(file)
+                    yield (X, np.array([classes.index(label)]))
+
+            else:
+                # Yield features in testing mode
+                if cwd == path:
+                    continue
+
+                for file in [os.path.join(cwd, file) for file in files]:
+                    yield (file, self.extract_features(file))
 
     def save_checkpoint(self):
         with bz2.BZ2File('weights.pbz2', 'wb') as file:
@@ -261,7 +282,7 @@ class NeuralNet:
         with bz2.BZ2File('weights.pbz2', 'rb') as file:
             self.weights = pickle.load(file)
 
-    def load_validation(self, path):
+    def load_validation(self):
         try:
             # Try loading validation set from file
             with bz2.BZ2File('valid.pbz2', 'rb') as file:
@@ -272,7 +293,7 @@ class NeuralNet:
             X_valid = None
             y_valid = np.array([], int)
 
-            for X, y in self.parse(path):
+            for X, y in self.parse(self.settings['validation']):
                 if X_valid is None:
                     X_valid = np.array(X)
                 else:
@@ -283,68 +304,64 @@ class NeuralNet:
             with bz2.BZ2File('valid.pbz2', 'wb') as file:
                 pickle.dump([X_valid, y_valid], file, protocol=-1)
 
-        return (X_valid, y_valid)
+        self.x_valid = X_valid
+        self.y_valid = y_valid
 
-# Example usage
-net = NeuralNet()
-X_valid, y_valid = net.load_validation(os.path.join(os.getcwd(), 'dogscats', 'valid'))
+        return True
 
-try:
-    net.load_checkpoint()
-except:
-    print('No saved weights found, will use random')
+    def run(self):
+        """Main routine - train or predict"""
 
-X, X_train = None, None
-y, y_train = np.array([], int), np.array([], int)
-cost = 10 ** 4
-
-for epoch in range(400):
-
-    if epoch > 0:
-        current_cost = net.cost(X, y)
-        loss, pred = net.predict(X_valid)
-        score = accuracy_score(y_valid, pred)
-        # Increase learning rate by 10% if cost is decreasing
-        if current_cost < cost:
-            net.settings['alpha'] *= 1.1
-        # Reduce learning rate by 50% if cost is increasing
-        else:
-            net.settings['alpha'] /= 1.5
-
-        log_data = [
-            epoch,
-            score * 100,
-            np.sum(loss),
-            current_cost,
-            (time.time() - start),
-            net.settings['alpha']
-        ]
-
-        print('Pass: {}; Accuracy: {:.2f}%; Loss: {:.2f}; Cost: {:.6f}; Time spent: {:.2f} seconds; Learning rate: {:.10f}'.format(*log_data))
-
-        cost = current_cost
-
-    count = 0
-    start = time.time()
-    net.t = 1
-
-    for X, y in net.parse(os.path.join(os.getcwd(), 'dogscats', 'train')):
-        if X_train is None:
-            X_train = np.array(X)
-        else:
-            X_train = np.vstack([X_train, X])
-
-        y_train = np.append(y_train, y)
-
-        if count % 10 == 0:
-            net.fit(X_train, y_train)
-            X_train = None
+        if self.settings['mode'] == 'train':
             y_train = np.array([], int)
+            x_train = None
+            for epoch in range(self.settings['epochs']):
+                # Init per-epoch defaults
+                count = 0
+                start = time.time()
+                self.t = 1
 
-        count += 1
+                for x, y in self.parse(self.settings['train']):
+                    x_train = np.vstack([x_train, x]) if x_train is not None else np.array(x)
+                    y_train = np.append(y_train, y)
 
-    net.save_checkpoint()
+                    if count % self.settings['batch'] == 0:
+                        self.fit(x_train, y_train)
+                        x_train = None
+                        y_train = np.array([], int)
 
-loss, pred = net.predict(X_valid)
-score = accuracy_score(y_valid, pred)
-print('Final accuracy: {0:.2f}%; Loss: {1:.4f}'.format(score * 100, np.sum(loss)))
+                    count += 1
+
+                else:
+                    # Process last batch if it exists
+                    if x_train is not None:
+                        self.fit(x_train, y_train)
+
+                cost = self.cost(x, y)
+                loss, pred = self.predict(self.x_valid)
+                score = accuracy_score(self.y_valid, pred)
+                log_data = [epoch + 1, score * 100, np.sum(loss), cost, (time.time() - start), self.settings['alpha']]
+
+                print('Pass: {}; Accuracy: {:.2f}%; Loss: {:.2f}; Cost: {:.6f}; Time spent: {:.2f} seconds; Learning rate: {:.10f}'.format(*log_data))
+                self.save_checkpoint()
+
+        elif self.settings['mode'] == 'test':
+            for file, x in self.parse(self.settings['test']):
+                loss, pred = self.predict(x)
+                print('File: {}, Prediction: {}; Loss: {:.2f}'.format(file, pred, loss))
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-t", "--train", help="Path to training set")
+parser.add_argument("-v", "--validation", help="Path to validation set")
+parser.add_argument("-ts", "--test", help="Path to testing set")
+parser.add_argument("-m", "--mode", help="Operation mode", choices=['train', 'test'], default='train')
+
+args = parser.parse_args()
+if args.mode == 'train' and (not args.train or not args.validation):
+    raise SystemExit('You must provide paths to training and validation sets for "train" mode')
+
+elif args.mode == 'test' and not args.test:
+    raise SystemExit('You must provide path to testing set for "test" mode')
+
+net = NeuralNet(vars(args))
+net.run()
