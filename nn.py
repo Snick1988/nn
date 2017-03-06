@@ -9,9 +9,7 @@ import pickle
 import numpy as np
 import argparse
 
-from theano import tensor as T
-from theano import function
-from sklearn import decomposition
+from theano import function, tensor as T
 from sklearn.metrics import accuracy_score
 
 
@@ -20,9 +18,9 @@ class NeuralNet:
     settings = {
         'layers': [
             # (neurons per layer, activation function)
-            (300, 'sigmoid'),
+            (800, 'sigmoid'),
         ],
-        'alpha': 0.0003,
+        'alpha': 0.000001,
         'batch': 10,
         'epochs': 400,
         'epsilon': 1e-8,
@@ -253,6 +251,9 @@ class NeuralNet:
                 for file in [os.path.join(cwd, file) for file in files]:
                     examples.append((file, current_class))
 
+                if not examples:
+                    raise Exception('No files found in {}'.format(path))
+
                 np.random.shuffle(examples)
 
                 for example in examples:
@@ -279,7 +280,13 @@ class NeuralNet:
 
     def load_checkpoint(self):
         with bz2.BZ2File('weights.pbz2', 'rb') as file:
-            self.weights = pickle.load(file)
+            weights = pickle.load(file)
+
+        if sum([w[0] for w in self.weights]) != sum([len(w) for w in weight]):
+            print('Saved weights do not match current settings. Will use random.')
+            return True
+
+        self.weights = weights
 
     def load_validation(self):
         try:
@@ -335,6 +342,9 @@ class NeuralNet:
                     # Process last batch if it exists
                     if x_train is not None:
                         self.fit(x_train, y_train)
+                        loss, pred = self.predict(x_train)
+                        score = accuracy_score(y_train, pred)
+                        print('Training batch accuracy: {:.2f}%; Loss: {:.2f}'.format(score * 100, np.sum(loss)))
 
                 cost = self.cost(x, y)
                 loss, pred = self.predict(self.x_valid)
